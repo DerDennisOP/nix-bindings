@@ -341,6 +341,10 @@ mod tests {
       .expect("builder")
       .with_flake_settings(&flake_settings)
       .expect("with flake settings")
+      .set_setting("eval-cache", "true")
+      .expect("eval-cache")
+      .set_setting("pure-eval", "true")
+      .expect("pure-eval")
       .build()
       .expect("state");
 
