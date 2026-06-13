@@ -580,6 +580,10 @@ impl LockedFlake {
     check_err(unsafe { self._context.as_ptr() }, err)?;
     Ok(result.filter(|s| !s.is_empty()))
   }
+
+  pub(crate) unsafe fn as_ptr(&self) -> *mut sys::nix_locked_flake {
+    self.inner.as_ptr()
+  }
 }
 
 impl ImportedLockedFlake {
