@@ -560,6 +560,36 @@ impl EvalStateBuilder {
     Ok(self)
   }
 
+  /// Set an evaluation setting on the builder (e.g. `"eval-cache"`,
+  /// `"pure-eval"`).
+  ///
+  /// Unlike [`Context::set_setting`](crate::Context::set_setting), which
+  /// mutates global configuration, this applies to the builder's own
+  /// evaluation settings, so the value reaches the [`EvalState`] produced by
+  /// [`build`](Self::build).
+  ///
+  /// # Errors
+  ///
+  /// Returns [`Error::KeyNotFound`] if the setting key is unknown.
+  pub fn set_setting(self, key: &str, value: &str) -> Result<Self> {
+    let key_c = CString::new(key)?;
+    let value_c = CString::new(value)?;
+    // SAFETY: context, builder, and strings are valid
+    unsafe {
+      check_err(
+        self.context.as_ptr(),
+        sys::nix_eval_state_builder_set_setting(
+          self.context.as_ptr(),
+          self.inner.as_ptr(),
+          key_c.as_ptr(),
+          value_c.as_ptr(),
+        ),
+      )?;
+    }
+
+    Ok(self)
+  }
+
   /// Skip loading Nix configuration from the environment.
   ///
   /// By default [`build`](Self::build) calls `nix_eval_state_builder_load` to
