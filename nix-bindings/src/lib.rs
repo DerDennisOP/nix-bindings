@@ -959,6 +959,31 @@ impl EvalState {
     Ok(result)
   }
 
+  /// Read the evaluator statistics for this state as a JSON string
+  /// (cpuTime, nrThunks, nrAvoided, memory/GC counters, ...).
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the C API call fails.
+  pub fn statistics_json(&self) -> Result<String> {
+    let mut err = sys::nix_err_NIX_OK;
+    // SAFETY: context and state are valid for the call; the closure runs
+    // synchronously and collects the JSON string.
+    let result = unsafe {
+      string_from_callback(|cb, ud| {
+        err = sys::nix_eval_state_get_stats_json(
+          self.context.as_ptr(),
+          self.as_ptr(),
+          cb,
+          ud,
+        );
+      })
+    };
+    check_err(unsafe { self.context.as_ptr() }, err)?;
+
+    result.ok_or(Error::NullPointer)
+  }
+
   /// Get the raw state pointer.
   ///
   /// # Safety
@@ -1862,5 +1887,28 @@ mod tests {
       .eval_from_string("1 + 1", "<eval>")
       .expect("Evaluation failed");
     assert_eq!(val.as_int().unwrap(), 2);
+  }
+
+  #[cfg(feature = "expr")]
+  #[test]
+  #[serial]
+  fn test_eval_state_statistics_json() {
+    let ctx = Arc::new(Context::new().expect("Failed to create context"));
+    let store =
+      Arc::new(Store::open(&ctx, None).expect("Failed to open store"));
+    let state = EvalStateBuilder::new(&store)
+      .expect("Failed to create builder")
+      .build()
+      .expect("Failed to build state");
+
+    let mut val = state
+      .eval_from_string("let f = x: x + x; in f 21", "<eval>")
+      .expect("Evaluation failed");
+    val.force().expect("Failed to force value");
+    assert_eq!(val.as_int().unwrap(), 42);
+
+    let json = state.statistics_json().expect("Failed to read stats json");
+    assert!(json.contains("cpuTime"), "stats json missing cpuTime: {json}");
+    assert!(json.contains("nrThunks"), "stats json missing nrThunks: {json}");
   }
 }
