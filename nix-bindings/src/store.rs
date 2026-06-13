@@ -653,6 +653,56 @@ impl Store {
     result.ok_or(Error::NullPointer)
   }
 
+  /// Register a temporary GC root protecting `path` until this store closes.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the C API call fails.
+  pub fn add_temp_root(&self, path: &StorePath) -> Result<()> {
+    // SAFETY: context, store, and path are valid for the duration of the call
+    let err = unsafe {
+      sys::nix_store_add_temp_root(
+        self._context.as_ptr(),
+        self.inner.as_ptr(),
+        path.inner.as_ptr(),
+      )
+    };
+    check_err(unsafe { self._context.as_ptr() }, err)
+  }
+
+  /// Create a permanent indirect GC root: a symlink at `gc_root` pointing at
+  /// `path`. Only supported by local filesystem stores.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the store is not local or the C API call fails.
+  pub fn add_perm_root(
+    &self,
+    path: &StorePath,
+    gc_root: &str,
+  ) -> Result<String> {
+    let gc_root_c = CString::new(gc_root)?;
+    let mut err = sys::nix_err_NIX_OK;
+
+    // SAFETY: context, store, path, and gc_root_c are valid for the call;
+    // the callback collects the resulting root path
+    let result = unsafe {
+      string_from_callback(|cb, ud| {
+        err = sys::nix_store_add_perm_root(
+          self._context.as_ptr(),
+          self.inner.as_ptr(),
+          path.inner.as_ptr(),
+          gc_root_c.as_ptr(),
+          cb,
+          ud,
+        );
+      })
+    };
+    check_err(unsafe { self._context.as_ptr() }, err)?;
+
+    result.ok_or(Error::NullPointer)
+  }
+
   /// Get the URI identifying this store (e.g., `"local"` or
   /// `"https://cache.nixos.org"`).
   ///
@@ -1150,6 +1200,21 @@ mod tests {
       .add_text_to_store("nix-bindings-text-test.txt", "hello, world\n")
       .expect("add_text_to_store failed");
     assert!(store.is_valid_path(&p));
+  }
+
+  #[test]
+  #[serial]
+  fn test_add_perm_root_non_local_errors() {
+    let ctx = Arc::new(Context::new().expect("ctx"));
+    let store = Store::open(&ctx, Some("dummy://")).expect("dummy store");
+
+    // Build the path without store-side parsing so the call under test is
+    // reached regardless of the dummy store's parse behaviour.
+    let path = StorePath::from_parts(&ctx, &[0u8; 20], "test").expect("path");
+
+    // dummy:// is not a LocalFSStore -> permanent roots unsupported.
+    let res = store.add_perm_root(&path, "/tmp/nix-bindings-gcroot");
+    assert!(res.is_err());
   }
 
   #[test]
