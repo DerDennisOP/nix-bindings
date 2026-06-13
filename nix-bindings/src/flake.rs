@@ -22,10 +22,12 @@ use crate::{
   Context,
   EvalState,
   Result,
+  Store,
   Value,
   check_err,
   check_ptr,
   checked_string_from_callback,
+  string_from_callback,
   sys,
 };
 
@@ -547,6 +549,37 @@ impl LockedFlake {
       eval_state,
     )
   }
+
+  /// Get the evaluation-cache fingerprint of this locked flake.
+  ///
+  /// Returns `None` when the flake's source is mutable (no fingerprint);
+  /// otherwise the Base16-encoded hash Nix uses as its eval-cache key.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the C API call fails.
+  pub fn fingerprint(
+    &self,
+    store: &Store,
+    fetch_settings: &FetchersSettings,
+  ) -> Result<Option<String>> {
+    let mut err = sys::nix_err_NIX_OK;
+    // SAFETY: all pointers are valid; the callback collects the hash string
+    let result = unsafe {
+      string_from_callback(|cb, ud| {
+        err = sys::nix_locked_flake_get_fingerprint(
+          self._context.as_ptr(),
+          store.as_ptr(),
+          fetch_settings.as_ptr(),
+          self.inner.as_ptr(),
+          cb,
+          ud,
+        );
+      })
+    };
+    check_err(unsafe { self._context.as_ptr() }, err)?;
+    Ok(result.filter(|s| !s.is_empty()))
+  }
 }
 
 impl ImportedLockedFlake {
@@ -877,5 +910,51 @@ mod tests {
       .expect("read answer");
     assert_eq!(answer, 42);
     drop(store);
+  }
+
+  #[test]
+  #[serial]
+  fn test_locked_flake_fingerprint() {
+    use std::io::Write;
+    let ctx = Arc::new(Context::new().expect("ctx"));
+    let store = Arc::new(Store::open(&ctx, None).expect("store"));
+    let fetch = FetchersSettings::new(&ctx).expect("fetch settings");
+    let flake_settings =
+      Arc::new(FlakeSettings::new(&ctx).expect("flake settings"));
+    let state = EvalStateBuilder::new(&store)
+      .expect("builder")
+      .with_flake_settings(&flake_settings)
+      .expect("with flake settings")
+      .build()
+      .expect("state");
+
+    let dir = std::env::temp_dir()
+      .join(format!("nix-bindings-fp-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let mut f = std::fs::File::create(dir.join("flake.nix")).expect("flake.nix");
+    f.write_all(b"{ outputs = { ... }: { hello = \"potato\"; }; }")
+      .expect("write");
+
+    let parse_flags = FlakeReferenceParseFlags::new(&ctx, &flake_settings)
+      .expect("parse flags")
+      .set_base_directory(dir.to_str().unwrap())
+      .expect("base dir");
+    let (flake_ref, _frag) =
+      FlakeReference::parse(&ctx, &fetch, &flake_settings, &parse_flags, ".")
+        .expect("parse ref");
+    let lock_flags = LockFlags::new(&ctx, &flake_settings).expect("lock flags");
+    let locked = LockedFlake::lock(
+      &ctx, &fetch, &flake_settings, &state, &lock_flags, &flake_ref,
+    )
+    .expect("lock");
+
+    let fp1 = locked.fingerprint(&store, &fetch).expect("fingerprint");
+    let fp2 = locked.fingerprint(&store, &fetch).expect("fingerprint");
+    assert_eq!(fp1, fp2);
+    if let Some(s) = &fp1 {
+      assert_eq!(s.len(), 64);
+      assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
+    }
   }
 }
