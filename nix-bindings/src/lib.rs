@@ -424,4 +424,27 @@ mod tests {
       .expect("Evaluation failed");
     assert_eq!(val.as_int().unwrap(), 2);
   }
+
+  #[cfg(feature = "expr")]
+  #[test]
+  #[serial]
+  fn test_eval_state_statistics_json() {
+    let ctx = Arc::new(Context::new().expect("Failed to create context"));
+    let store =
+      Arc::new(Store::open(&ctx, None).expect("Failed to open store"));
+    let state = EvalStateBuilder::new(&store)
+      .expect("Failed to create builder")
+      .build()
+      .expect("Failed to build state");
+
+    let mut val = state
+      .eval_from_string("let f = x: x + x; in f 21", "<eval>")
+      .expect("Evaluation failed");
+    val.force().expect("Failed to force value");
+    assert_eq!(val.as_int().unwrap(), 42);
+
+    let json = state.statistics_json().expect("Failed to read stats json");
+    assert!(json.contains("cpuTime"), "stats json missing cpuTime: {json}");
+    assert!(json.contains("nrThunks"), "stats json missing nrThunks: {json}");
+  }
 }
