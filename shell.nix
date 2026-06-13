@@ -1,9 +1,8 @@
-{pkgs ? import <nixpkgs> {}}: let
-  # XXX: update comment or pin specific version on `nix flake update`.
-  # Generally the policy is to use the version corresponding to `pkgs.nix`'s
-  # in nixos-stable. Fortunately the C API does not move fast enough, so
-  # there is a degree of forward-compatibility.
-  nixForBindings = pkgs.nixVersions.nix_2_34;
+{
+  pkgs ? import <nixpkgs> {},
+  # Supplied by flake.nix from the local nix fork; falls back to nixpkgs for bare `nix-shell` use.
+  nixForBindings ? pkgs.nixVersions.nix_2_34,
+}: let
   inherit (pkgs.rustc) llvmPackages;
 in
   pkgs.mkShell {

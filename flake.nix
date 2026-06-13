@@ -5,8 +5,10 @@
   # is not. Security and critical performance improvements are always included
   # so it makes a good starting point.
   inputs.nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+  inputs.nix-fork.url = "git+file:///home/dennis/repos/nix?ref=feat/optimized-eval-capi";
+  inputs.nix-fork.inputs.nixpkgs.follows = "nixpkgs";
 
-  outputs = {nixpkgs, ...}: let
+  outputs = {nixpkgs, nix-fork, ...}: let
     systems = ["x86_64-linux" "aarch64-linux"];
     forEachSystem = nixpkgs.lib.genAttrs systems;
     pkgsForEach = nixpkgs.legacyPackages;
@@ -14,7 +16,10 @@
     devShells = forEachSystem (system: let
       pkgs = pkgsForEach.${system};
     in {
-      default = pkgsForEach.${system}.callPackage ./shell.nix {inherit pkgs;};
+      default = pkgsForEach.${system}.callPackage ./shell.nix {
+          inherit pkgs;
+          nixForBindings = nix-fork.packages.${system}.default;
+        };
     });
   };
 }
