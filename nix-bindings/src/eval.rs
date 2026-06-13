@@ -13,7 +13,7 @@ use crate::{
   StorePath,
   Value,
   context::is_pure_eval,
-  error::check_err,
+  error::{check_err, string_from_callback},
   sys,
 };
 
@@ -610,6 +610,31 @@ impl EvalState {
     }
 
     Ok(result)
+  }
+
+  /// Read the evaluator statistics for this state as a JSON string
+  /// (cpuTime, nrThunks, nrAvoided, memory/GC counters, ...).
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the C API call fails.
+  pub fn statistics_json(&self) -> Result<String> {
+    let mut err = sys::nix_err_NIX_OK;
+    // SAFETY: context and state are valid for the call; the closure runs
+    // synchronously and collects the JSON string.
+    let result = unsafe {
+      string_from_callback(|cb, ud| {
+        err = sys::nix_eval_state_get_stats_json(
+          self.context.as_ptr(),
+          self.as_ptr(),
+          cb,
+          ud,
+        );
+      })
+    };
+    check_err(unsafe { self.context.as_ptr() }, err)?;
+
+    result.ok_or(Error::NullPointer)
   }
 
   /// Get the raw state pointer.
