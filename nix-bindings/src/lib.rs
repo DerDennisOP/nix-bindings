@@ -80,6 +80,7 @@ use std::{path::Path, sync::Arc};
 #[cfg(feature = "expr")] mod lists;
 
 #[cfg(feature = "external")] pub mod external;
+#[cfg(feature = "flake")] pub mod eval_cache;
 #[cfg(feature = "flake")] pub mod flake;
 #[cfg(feature = "primop")] pub mod primop;
 
