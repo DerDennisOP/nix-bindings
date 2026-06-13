@@ -18,6 +18,7 @@
 
 #ifdef FEATURE_FLAKE
 #include <nix_api_flake.h>
+#include <nix_api_eval_cache.h>
 #endif
 
 #ifdef FEATURE_MAIN
