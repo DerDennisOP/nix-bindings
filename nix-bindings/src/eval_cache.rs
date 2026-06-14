@@ -93,6 +93,22 @@ impl EvalCache {
       _context: Arc::clone(&self._context),
     })
   }
+
+  /// Commit pending writes and checkpoint the cache's SQLite WAL into the main
+  /// `.sqlite` file, so a reader of the file alone sees them. Needed because a
+  /// long-lived cache otherwise persists only when its last connection closes.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the C API call fails.
+  pub fn commit(&self) -> Result<()> {
+    // SAFETY: context and cache are valid for the duration of the call
+    let err = unsafe {
+      sys::nix_eval_cache_commit(self._context.as_ptr(), self.inner.as_ptr())
+    };
+
+    check_err(unsafe { self._context.as_ptr() }, err)
+  }
 }
 
 impl Drop for EvalCache {
