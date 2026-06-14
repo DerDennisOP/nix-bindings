@@ -94,9 +94,10 @@ impl EvalCache {
     })
   }
 
-  /// Commit pending writes and checkpoint the cache's SQLite WAL into the main
-  /// `.sqlite` file, so a reader of the file alone sees them. Needed because a
-  /// long-lived cache otherwise persists only when its last connection closes.
+  /// Commit pending writes into the cache's SQLite WAL **without** checkpointing.
+  /// Safe to call concurrently from several evaluators sharing one cache; a
+  /// checkpoint here would deadlock on the WAL read-slot locks. Use
+  /// [`Self::checkpoint`] to fold the WAL into the main `.sqlite` file.
   ///
   /// # Errors
   ///
@@ -105,6 +106,23 @@ impl EvalCache {
     // SAFETY: context and cache are valid for the duration of the call
     let err = unsafe {
       sys::nix_eval_cache_commit(self._context.as_ptr(), self.inner.as_ptr())
+    };
+
+    check_err(unsafe { self._context.as_ptr() }, err)
+  }
+
+  /// Fold the WAL into the main `.sqlite` file (truncate checkpoint), so a reader
+  /// of the file alone sees every committed write. Call once with no concurrent
+  /// readers/writers (e.g. at the end of an evaluation, before shipping the
+  /// file); it blocks while other connections hold WAL read locks.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the C API call fails.
+  pub fn checkpoint(&self) -> Result<()> {
+    // SAFETY: context and cache are valid for the duration of the call
+    let err = unsafe {
+      sys::nix_eval_cache_checkpoint(self._context.as_ptr(), self.inner.as_ptr())
     };
 
     check_err(unsafe { self._context.as_ptr() }, err)
