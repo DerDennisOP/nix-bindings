@@ -111,10 +111,11 @@ impl EvalCache {
     check_err(unsafe { self._context.as_ptr() }, err)
   }
 
-  /// Fold the WAL into the main `.sqlite` file (truncate checkpoint), so a reader
-  /// of the file alone sees every committed write. Call once with no concurrent
-  /// readers/writers (e.g. at the end of an evaluation, before shipping the
-  /// file); it blocks while other connections hold WAL read locks.
+  /// Fold the WAL into the main `.sqlite` file (PASSIVE checkpoint), so a reader
+  /// of the file alone sees the committed writes. Never blocks: it does not take
+  /// the exclusive WAL read-slot lock, so it is safe to call while other
+  /// connections hold read locks (e.g. a concurrent evaluator of the same flake).
+  /// A lone caller folds the whole WAL; under concurrency it folds what it can.
   ///
   /// # Errors
   ///
