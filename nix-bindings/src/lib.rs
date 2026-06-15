@@ -154,7 +154,7 @@ pub use store::{Derivation, Store, StorePath};
 #[cfg(feature = "expr")] mod value_ops;
 
 #[cfg(feature = "expr")]
-pub use eval::{EvalState, EvalStateBuilder};
+pub use eval::{EvalState, EvalStateBuilder, EvalStats};
 #[cfg(feature = "expr")] pub use value::{Value, ValueType};
 #[cfg(feature = "expr")] pub use value_ops::NixValueOps;
 
@@ -438,7 +438,7 @@ mod tests {
       .build()
       .expect("Failed to build state");
 
-    let mut val = state
+    let val = state
       .eval_from_string("let f = x: x + x; in f 21", "<eval>")
       .expect("Evaluation failed");
     val.force().expect("Failed to force value");
@@ -447,5 +447,41 @@ mod tests {
     let json = state.statistics_json().expect("Failed to read stats json");
     assert!(json.contains("cpuTime"), "stats json missing cpuTime: {json}");
     assert!(json.contains("nrThunks"), "stats json missing nrThunks: {json}");
+  }
+
+  #[cfg(feature = "expr")]
+  #[test]
+  fn eval_stats_saturating_sub_diffs_counters_keeps_heap_gauge() {
+    let a = EvalStats { nr_thunks: 10, gc_total_bytes: 100, gc_heap_size: 4096, ..Default::default() };
+    let b = EvalStats { nr_thunks: 25, gc_total_bytes: 250, gc_heap_size: 8192, ..Default::default() };
+    let d = b.saturating_sub(&a);
+    assert_eq!(d.nr_thunks, 15);
+    assert_eq!(d.gc_total_bytes, 150);
+    assert_eq!(d.gc_heap_size, 8192, "heap is a gauge, kept not diffed");
+    assert_eq!(a.saturating_sub(&b).nr_thunks, 0, "saturates, no underflow");
+  }
+
+  #[cfg(feature = "expr")]
+  #[test]
+  #[serial]
+  fn test_eval_state_stats() {
+    let ctx = Arc::new(Context::new().expect("Failed to create context"));
+    let store =
+      Arc::new(Store::open(&ctx, None).expect("Failed to open store"));
+    let state = EvalStateBuilder::new(&store)
+      .expect("Failed to create builder")
+      .build()
+      .expect("Failed to build state");
+
+    let before = state.stats().expect("Failed to read stats");
+    let val = state
+      .eval_from_string("let f = x: x + x; in f 21", "<eval>")
+      .expect("Evaluation failed");
+    val.force().expect("Failed to force value");
+    assert_eq!(val.as_int().unwrap(), 42);
+
+    let after = state.stats().expect("Failed to read stats");
+    assert!(after.nr_thunks >= before.nr_thunks);
+    assert!(after.saturating_sub(&before).nr_function_calls > 0);
   }
 }
