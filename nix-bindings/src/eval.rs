@@ -667,6 +667,33 @@ impl EvalState {
     result.ok_or(Error::NullPointer)
   }
 
+  /// Read the lean evaluator counters (thunks, calls, lookups, GC heap/total)
+  /// without JSON serialization. Poll per request and diff two snapshots via
+  /// [`EvalStats::saturating_sub`] for per-evaluation cost.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the C API call fails.
+  pub fn stats(&self) -> Result<EvalStats> {
+    // SAFETY: a zeroed POD is a valid initial nix_eval_stats; the context and
+    // state handles are the same ones statistics_json() passes.
+    let mut raw: sys::nix_eval_stats = unsafe { std::mem::zeroed() };
+    let err = unsafe {
+      sys::nix_eval_state_get_stats(self.context.as_ptr(), self.as_ptr(), &mut raw)
+    };
+    check_err(unsafe { self.context.as_ptr() }, err)?;
+
+    Ok(EvalStats {
+      nr_thunks:         raw.nr_thunks,
+      nr_function_calls: raw.nr_function_calls,
+      nr_primop_calls:   raw.nr_primop_calls,
+      nr_lookups:        raw.nr_lookups,
+      nr_op_updates:     raw.nr_op_updates,
+      gc_heap_size:      raw.gc_heap_size,
+      gc_total_bytes:    raw.gc_total_bytes,
+    })
+  }
+
   /// Get the raw state pointer.
   ///
   /// # Safety
@@ -674,6 +701,43 @@ impl EvalState {
   /// The caller must ensure the pointer is used safely.
   pub(crate) unsafe fn as_ptr(&self) -> *mut sys::EvalState {
     self.inner.as_ptr()
+  }
+}
+
+/// Lean snapshot of the evaluator's cumulative counters, read via
+/// [`EvalState::stats`]. Counters are monotonic over an `EvalState`'s lifetime;
+/// `gc_heap_size` is a gauge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EvalStats {
+  /// Thunks allocated during evaluation.
+  pub nr_thunks:         u64,
+  /// Lambda/function calls performed.
+  pub nr_function_calls: u64,
+  /// Primop invocations performed.
+  pub nr_primop_calls:   u64,
+  /// Variable and attribute lookups performed.
+  pub nr_lookups:        u64,
+  /// `//` update-operator evaluations.
+  pub nr_op_updates:     u64,
+  /// Current GC heap size in bytes (gauge, not cumulative).
+  pub gc_heap_size:      u64,
+  /// Cumulative bytes allocated by the GC.
+  pub gc_total_bytes:    u64,
+}
+
+impl EvalStats {
+  /// Field-wise saturating difference (`self - base`) for per-eval deltas.
+  /// `gc_heap_size` is a gauge, so the current value is kept (not diffed).
+  pub fn saturating_sub(&self, base: &EvalStats) -> EvalStats {
+    EvalStats {
+      nr_thunks:         self.nr_thunks.saturating_sub(base.nr_thunks),
+      nr_function_calls: self.nr_function_calls.saturating_sub(base.nr_function_calls),
+      nr_primop_calls:   self.nr_primop_calls.saturating_sub(base.nr_primop_calls),
+      nr_lookups:        self.nr_lookups.saturating_sub(base.nr_lookups),
+      nr_op_updates:     self.nr_op_updates.saturating_sub(base.nr_op_updates),
+      gc_heap_size:      self.gc_heap_size,
+      gc_total_bytes:    self.gc_total_bytes.saturating_sub(base.gc_total_bytes),
+    }
   }
 }
 
