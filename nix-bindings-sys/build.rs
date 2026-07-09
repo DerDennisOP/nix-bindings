@@ -27,7 +27,6 @@ fn main() {
   println!("cargo:rerun-if-changed=include/nix_api_flake_shim.h");
   println!("cargo:rerun-if-changed=src/wrappers/add_to_store.cc");
   println!("cargo:rerun-if-changed=src/wrappers/init_path.cc");
-  println!("cargo:rerun-if-changed=src/wrappers/eval.cc");
   println!("cargo:rerun-if-changed=src/wrappers/flake.cc");
 
   // docs.rs has no Nix system libraries. Write empty bindings so the crate
@@ -126,7 +125,7 @@ fn main() {
         cc_build.include(path);
       }
 
-      // eval.cc needs get-drvs.hh from the C++ nix-expr package. Probe for
+      // init_path.cc needs the C++ nix-expr headers (eval.hh). Probe for
       // include paths only; cargo_metadata(false) suppresses the transitive
       // link directives (gc, boost, ...) that nix-expr.pc carries and that
       // downstream builds may not expose.
@@ -178,10 +177,8 @@ fn main() {
 
     if env::var("CARGO_FEATURE_EXPR").is_ok() {
       cc_build.file("src/wrappers/init_path.cc");
-      cc_build.file("src/wrappers/eval.cc");
-      // Both init_path.cc and eval.cc call into C++ libnixexpr (allowPath,
-      // getDerivation, autoCallFunction). Force it onto the link line so
-      // dependent crates that only use the C API still link correctly.
+      // init_path.cc calls into C++ libnixexpr (allowPath); force it onto the
+      // link line so dependent crates that only use the C API still link.
       println!("cargo:rustc-link-lib=dylib=nixexpr");
     }
 
