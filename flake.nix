@@ -1,6 +1,6 @@
 {
   inputs.nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
-  inputs.nix-fork.url = "git+file:///home/dennis/repos/nix?ref=feat/eval-metrics-stats";
+  inputs.nix-fork.url = "github:DerDennisOP/nix/feat/eval-metrics-stats";
   inputs.nix-fork.inputs.nixpkgs.follows = "nixpkgs";
 
   outputs = {nixpkgs, nix-fork, ...}: let
