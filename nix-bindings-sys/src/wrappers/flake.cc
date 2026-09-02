@@ -34,9 +34,8 @@ static nix::SourcePath source_path_from_json(const nlohmann::json &value) {
                          nix::CanonPath(value.get<std::string>())};
 }
 
-static nix::FlakeRef flake_ref_from_json(
-    const nix::fetchers::Settings &settings, const nlohmann::json &value) {
-  return nix::FlakeRef::fromAttrs(settings, nix::fetchers::jsonToAttrs(value));
+static nix::FlakeRef flake_ref_from_json(const nlohmann::json &value) {
+  return nix::FlakeRef::fromAttrs(nix::fetchers::jsonToAttrs(value));
 }
 
 static void collect_lock_file_nodes(
@@ -156,12 +155,9 @@ nix_locked_flake *nix_locked_flake_import_json(
     auto root = exported.at(FIELD_ROOT);
     auto root_dir = node_paths.at(lock_file.root);
     nix::flake::Flake flake{
-        .originalRef =
-            flake_ref_from_json(*fetch_settings->settings, root.at(FIELD_ORIGINAL)),
-        .resolvedRef =
-            flake_ref_from_json(*fetch_settings->settings, root.at(FIELD_RESOLVED)),
-        .lockedRef =
-            flake_ref_from_json(*fetch_settings->settings, root.at(FIELD_LOCKED)),
+        .originalRef = flake_ref_from_json(root.at(FIELD_ORIGINAL)),
+        .resolvedRef = flake_ref_from_json(root.at(FIELD_RESOLVED)),
+        .lockedRef = flake_ref_from_json(root.at(FIELD_LOCKED)),
         .path = root_dir / "flake.nix",
         .forceDirty = root.value(FIELD_FORCE_DIRTY, false),
     };
