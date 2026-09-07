@@ -24,11 +24,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1782949081,
-        "narHash": "sha256-vp6Y/Grm98ESt6ceOkWiHWyZRDV3J1RID4w+6NWK9yA=",
+        "lastModified": 1778716662,
+        "narHash": "sha256-m1Yf0wZ8j1OHjTc2UwHwyQRSnNeSgLJOd7q5Y45hzi4=",
         "owner": "hercules-ci",
         "repo": "flake-parts",
-        "rev": "17c9d6cdfc60c64f4ee8d306f9bc0b4ccb51481e",
+        "rev": "f7c1a2d347e4c52d5fb8d10cb4d94b5884e546fb",
         "type": "github"
       },
       "original": {
@@ -42,17 +42,20 @@
         "flake-compat": [
           "nix-fork"
         ],
+        "gitignore": [
+          "nix-fork"
+        ],
         "nixpkgs": [
           "nix-fork",
           "nixpkgs"
         ]
       },
       "locked": {
-        "lastModified": 1783008725,
-        "narHash": "sha256-jGiy6+sxjNWXSjp25uoJuNfyH9zBK1PEDY0lVoL4ibQ=",
+        "lastModified": 1778507602,
+        "narHash": "sha256-kTwur1wV+01SdqskVMSo6JMEpg71ps3HpbFY2GsflKs=",
         "owner": "cachix",
         "repo": "git-hooks.nix",
-        "rev": "bca82caa46d5ec0f5d422c61fb1e30bc51313cbe",
+        "rev": "61ab0e80d9c7ab14c256b5b453d8b3fb0189ba0a",
         "type": "github"
       },
       "original": {
@@ -73,16 +76,16 @@
         "nixpkgs-regression": "nixpkgs-regression"
       },
       "locked": {
-        "lastModified": 1787921108,
-        "narHash": "sha256-e0H2As+IPAK163y8Am0nGW+FNMX90y6RDEYyA6wuS3s=",
+        "lastModified": 1788816079,
+        "narHash": "sha256-EfKngNvAjx338Uu5mMrDbvL1u9fwoF2dOTL79rBtIm4=",
         "owner": "DerDennisOP",
         "repo": "nix",
-        "rev": "e9862aa7f45a4659c4d933310f5e8bd50530148f",
+        "rev": "a3e4a641e1b8374a2ee6cf4d9282da36874f2299",
         "type": "github"
       },
       "original": {
         "owner": "DerDennisOP",
-        "ref": "feat/eval-metrics-stats",
+        "ref": "feat/eval-metrics-stats-2.35",
         "repo": "nix",
         "type": "github"
       }
