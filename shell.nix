@@ -1,6 +1,6 @@
 {
   pkgs ? import <nixpkgs> {},
-  # Supplied by flake.nix from the local nix fork; falls back to nixpkgs for bare `nix-shell` use.
+  # flake.nix passes nixpkgs' nix with nix/patches applied. Bare `nix-shell` keeps plain nixpkgs nix.
   nixForBindings ? pkgs.nixVersions.nix_2_35,
 }: let
   inherit (pkgs) lib;
