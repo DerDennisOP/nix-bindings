@@ -691,13 +691,24 @@ impl EvalState {
   ///
   /// Returns an error if the C API call fails.
   pub fn stats(&self) -> Result<EvalStats> {
-    // SAFETY: a zeroed POD is a valid initial nix_eval_stats; the context and
-    // state handles are the same ones statistics_json() passes.
+    self.stats_with(&self.context)
+  }
+
+  /// Read the same counters through `context` instead of the state's own
+  /// context, so a second thread can poll them with a context of its own.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the C API call fails.
+  pub fn stats_with(&self, context: &Context) -> Result<EvalStats> {
+    // SAFETY: a zeroed POD is a valid initial nix_eval_stats. The counters are
+    // atomics and the GC numbers come from GC_get_heap_usage_safe, so reading
+    // them beside a running evaluation is sound.
     let mut raw: sys::nix_eval_stats = unsafe { std::mem::zeroed() };
     let err = unsafe {
-      sys::nix_eval_state_get_stats(self.context.as_ptr(), self.as_ptr(), &mut raw)
+      sys::nix_eval_state_get_stats(context.as_ptr(), self.as_ptr(), &mut raw)
     };
-    check_err(unsafe { self.context.as_ptr() }, err)?;
+    check_err(unsafe { context.as_ptr() }, err)?;
 
     Ok(EvalStats {
       nr_thunks:         raw.nr_thunks,
