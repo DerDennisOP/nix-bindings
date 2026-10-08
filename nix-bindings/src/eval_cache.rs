@@ -94,23 +94,6 @@ impl EvalCache {
     })
   }
 
-  /// Commit pending writes into the cache's SQLite WAL **without** checkpointing.
-  /// Safe to call concurrently from several evaluators sharing one cache; a
-  /// checkpoint here would deadlock on the WAL read-slot locks. Use
-  /// [`Self::checkpoint`] to fold the WAL into the main `.sqlite` file.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if the C API call fails.
-  pub fn commit(&self) -> Result<()> {
-    // SAFETY: context and cache are valid for the duration of the call
-    let err = unsafe {
-      sys::nix_eval_cache_commit(self._context.as_ptr(), self.inner.as_ptr())
-    };
-
-    check_err(unsafe { self._context.as_ptr() }, err)
-  }
-
   /// Fold the WAL into the main `.sqlite` file (PASSIVE checkpoint), so a reader
   /// of the file alone sees the committed writes. Never blocks: it does not take
   /// the exclusive WAL read-slot lock, so it is safe to call while other
