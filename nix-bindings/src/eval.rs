@@ -3,7 +3,13 @@
 
 #![cfg(feature = "expr")]
 
-use std::{ffi::CString, path::Path, ptr::NonNull, sync::Arc};
+use std::{
+  ffi::{CStr, CString, c_char, c_void},
+  panic::{self, AssertUnwindSafe},
+  path::Path,
+  ptr::NonNull,
+  sync::Arc,
+};
 
 use crate::{
   Context,
@@ -17,15 +23,74 @@ use crate::{
   sys,
 };
 
+/// Realises the derived paths (`/nix/store/<hash>-<name>.drv^out`) of an
+/// import from derivation, returning once their outputs are valid in the
+/// store.
+pub type RealiseHook =
+  Box<dyn Fn(&[String]) -> std::result::Result<(), String> + Send + Sync>;
+
+unsafe extern "C" fn realise_trampoline(
+  user_data: *mut c_void,
+  context: *mut sys::nix_c_context,
+  derived_paths: *mut *const c_char,
+  count: usize,
+) -> sys::nix_err {
+  let hook = unsafe { &*(user_data as *const RealiseHook) };
+  let result = panic::catch_unwind(AssertUnwindSafe(|| {
+    let paths: Vec<String> = if count == 0 {
+      Vec::new()
+    } else {
+      unsafe { std::slice::from_raw_parts(derived_paths, count) }
+        .iter()
+        .map(|&path| {
+          unsafe { CStr::from_ptr(path) }
+            .to_string_lossy()
+            .into_owned()
+        })
+        .collect()
+    };
+    hook(&paths)
+  }));
+
+  let message = match result {
+    Ok(Ok(())) => return sys::nix_err_NIX_OK,
+    Ok(Err(message)) => message,
+    Err(payload) => {
+      let detail = payload
+        .downcast_ref::<&'static str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic payload".to_owned());
+      format!("realise hook panicked: {detail}")
+    },
+  };
+  let message =
+    CString::new(message).unwrap_or_else(|_| c"realise hook failed".to_owned());
+  unsafe {
+    sys::nix_set_err_msg(
+      context,
+      sys::nix_err_NIX_ERR_NIX_ERROR,
+      message.as_ptr(),
+    )
+  }
+}
+
+fn free_realise_hook(hook: Option<NonNull<RealiseHook>>) {
+  if let Some(hook) = hook {
+    drop(unsafe { Box::from_raw(hook.as_ptr()) });
+  }
+}
+
 /// Builder for Nix evaluation state.
 ///
 /// This allows configuring the evaluation environment before creating
 /// the evaluation state.
 pub struct EvalStateBuilder {
-  inner:     NonNull<sys::nix_eval_state_builder>,
-  store:     Arc<Store>,
-  context:   Arc<Context>,
-  skip_load: bool,
+  inner:        NonNull<sys::nix_eval_state_builder>,
+  store:        Arc<Store>,
+  context:      Arc<Context>,
+  skip_load:    bool,
+  realise_hook: Option<NonNull<RealiseHook>>,
 }
 
 impl EvalStateBuilder {
@@ -51,6 +116,7 @@ impl EvalStateBuilder {
       store: Arc::clone(store),
       context: Arc::clone(&store._context),
       skip_load: false,
+      realise_hook: None,
     })
   }
 
@@ -145,6 +211,34 @@ impl EvalStateBuilder {
     Ok(self)
   }
 
+  /// Realise the derivations of an import from derivation through `hook`
+  /// instead of building them through the store.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the hook cannot be installed.
+  pub fn set_realise_hook(mut self, hook: RealiseHook) -> Result<Self> {
+    let hook = NonNull::from(Box::leak(Box::new(hook)));
+    let installed = unsafe {
+      check_err(
+        self.context.as_ptr(),
+        sys::nix_eval_state_builder_set_realise_hook(
+          self.context.as_ptr(),
+          self.inner.as_ptr(),
+          Some(realise_trampoline),
+          hook.as_ptr().cast(),
+        ),
+      )
+    };
+    if let Err(e) = installed {
+      free_realise_hook(Some(hook));
+      return Err(e);
+    }
+    free_realise_hook(self.realise_hook.replace(hook));
+
+    Ok(self)
+  }
+
   /// Skip loading Nix configuration from the environment.
   ///
   /// By default [`build`](Self::build) calls `nix_eval_state_builder_load` to
@@ -162,7 +256,7 @@ impl EvalStateBuilder {
   /// # Errors
   ///
   /// Returns an error if the evaluation state cannot be built.
-  pub fn build(self) -> Result<EvalState> {
+  pub fn build(mut self) -> Result<EvalState> {
     if !self.skip_load {
       // SAFETY: context and builder are valid
       unsafe {
@@ -187,6 +281,7 @@ impl EvalStateBuilder {
       inner,
       store: self.store.clone(),
       context: self.context.clone(),
+      realise_hook: self.realise_hook.take(),
     })
   }
 }
@@ -197,6 +292,7 @@ impl Drop for EvalStateBuilder {
     unsafe {
       sys::nix_eval_state_builder_free(self.inner.as_ptr());
     }
+    free_realise_hook(self.realise_hook.take());
   }
 }
 
@@ -209,6 +305,7 @@ pub struct EvalState {
   #[expect(dead_code, reason = "keeps the Arc<Store> alive Drop side-effects")]
   store:              Arc<Store>,
   pub(crate) context: Arc<Context>,
+  realise_hook:       Option<NonNull<RealiseHook>>,
 }
 
 impl EvalState {
@@ -774,9 +871,42 @@ impl Drop for EvalState {
     unsafe {
       sys::nix_state_free(self.inner.as_ptr());
     }
+    free_realise_hook(self.realise_hook.take());
   }
 }
 
 // SAFETY: see crate-level "# Thread Safety" docs and the comment in
 // the original lib.rs Send impl.
 unsafe impl Send for EvalState {}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn a_failing_realise_hook_sets_its_message_on_the_context() {
+    let context = Context::new().unwrap();
+    let hook: RealiseHook = Box::new(|_| Err("nope".to_owned()));
+    let path = c"/nix/store/00000000000000000000000000000000-x.drv^out";
+    let mut paths = [path.as_ptr()];
+
+    let err = unsafe {
+      realise_trampoline(
+        (&raw const hook).cast_mut().cast(),
+        context.as_ptr(),
+        paths.as_mut_ptr(),
+        paths.len(),
+      )
+    };
+
+    assert_eq!(err, sys::nix_err_NIX_ERR_NIX_ERROR);
+    let message = unsafe {
+      CStr::from_ptr(sys::nix_err_msg(
+        std::ptr::null_mut(),
+        context.as_ptr(),
+        std::ptr::null_mut(),
+      ))
+    };
+    assert_eq!(message.to_str().unwrap(), "nope");
+  }
+}
