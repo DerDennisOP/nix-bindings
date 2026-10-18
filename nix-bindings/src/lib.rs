@@ -154,7 +154,13 @@ pub use store::{Derivation, Store, StorePath};
 #[cfg(feature = "expr")] mod value_ops;
 
 #[cfg(feature = "expr")]
-pub use eval::{EvalState, EvalStateBuilder, EvalStats, RealiseHook};
+pub use eval::{
+  EvalState,
+  EvalStateBuilder,
+  EvalStats,
+  FetchHook,
+  RealiseHook,
+};
 #[cfg(feature = "expr")] pub use value::{Value, ValueType};
 #[cfg(feature = "expr")] pub use value_ops::NixValueOps;
 

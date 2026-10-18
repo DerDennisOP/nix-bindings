@@ -29,6 +29,12 @@ use crate::{
 pub type RealiseHook =
   Box<dyn Fn(&[String]) -> std::result::Result<(), String> + Send + Sync>;
 
+/// Fetches an input missing from the store. Takes the request JSON
+/// `{"builtin", "args", "storePath"?}` and returns the response JSON
+/// `{"storePath", "attrs"?}` once that store path is valid.
+pub type FetchHook =
+  Box<dyn Fn(&str) -> std::result::Result<String, String> + Send + Sync>;
+
 unsafe extern "C" fn realise_trampoline(
   user_data: *mut c_void,
   context: *mut sys::nix_c_context,
@@ -52,20 +58,59 @@ unsafe extern "C" fn realise_trampoline(
     hook(&paths)
   }));
 
-  let message = match result {
-    Ok(Ok(())) => return sys::nix_err_NIX_OK,
-    Ok(Err(message)) => message,
-    Err(payload) => {
-      let detail = payload
-        .downcast_ref::<&'static str>()
-        .map(|s| (*s).to_owned())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "unknown panic payload".to_owned());
-      format!("realise hook panicked: {detail}")
+  match hook_outcome(result, "realise hook") {
+    Ok(()) => sys::nix_err_NIX_OK,
+    Err(message) => unsafe { set_hook_error(context, message) },
+  }
+}
+
+unsafe extern "C" fn fetch_trampoline(
+  user_data: *mut c_void,
+  context: *mut sys::nix_c_context,
+  request_json: *const c_char,
+  callback: sys::nix_get_string_callback,
+  callback_user_data: *mut c_void,
+) -> sys::nix_err {
+  let hook = unsafe { &*(user_data as *const FetchHook) };
+  let result = panic::catch_unwind(AssertUnwindSafe(|| {
+    hook(&unsafe { CStr::from_ptr(request_json) }.to_string_lossy())
+  }));
+
+  let response = hook_outcome(result, "fetch hook").and_then(|response| {
+    u32::try_from(response.len())
+      .map(|len| (response, len))
+      .map_err(|_| "fetch hook response is too long".to_owned())
+  });
+  match (response, callback) {
+    (Ok((response, len)), Some(callback)) => {
+      unsafe { callback(response.as_ptr().cast(), len, callback_user_data) };
+      sys::nix_err_NIX_OK
     },
-  };
+    (Ok(_), None) => sys::nix_err_NIX_OK,
+    (Err(message), _) => unsafe { set_hook_error(context, message) },
+  }
+}
+
+fn hook_outcome<T>(
+  result: std::thread::Result<std::result::Result<T, String>>,
+  hook: &str,
+) -> std::result::Result<T, String> {
+  result.unwrap_or_else(|payload| {
+    let detail = payload
+      .downcast_ref::<&'static str>()
+      .map(|s| (*s).to_owned())
+      .or_else(|| payload.downcast_ref::<String>().cloned())
+      .unwrap_or_else(|| "unknown panic payload".to_owned());
+    Err(format!("{hook} panicked: {detail}"))
+  })
+}
+
+unsafe fn set_hook_error(
+  context: *mut sys::nix_c_context,
+  message: String,
+) -> sys::nix_err {
   let message =
-    CString::new(message).unwrap_or_else(|_| c"realise hook failed".to_owned());
+    CString::new(message).unwrap_or_else(|_| c"hook failed".to_owned());
   unsafe {
     sys::nix_set_err_msg(
       context,
@@ -75,9 +120,20 @@ unsafe extern "C" fn realise_trampoline(
   }
 }
 
-fn free_realise_hook(hook: Option<NonNull<RealiseHook>>) {
-  if let Some(hook) = hook {
-    drop(unsafe { Box::from_raw(hook.as_ptr()) });
+#[derive(Default)]
+struct Hooks {
+  realise: Option<NonNull<RealiseHook>>,
+  fetch:   Option<NonNull<FetchHook>>,
+}
+
+impl Drop for Hooks {
+  fn drop(&mut self) {
+    if let Some(hook) = self.realise.take() {
+      drop(unsafe { Box::from_raw(hook.as_ptr()) });
+    }
+    if let Some(hook) = self.fetch.take() {
+      drop(unsafe { Box::from_raw(hook.as_ptr()) });
+    }
   }
 }
 
@@ -86,11 +142,11 @@ fn free_realise_hook(hook: Option<NonNull<RealiseHook>>) {
 /// This allows configuring the evaluation environment before creating
 /// the evaluation state.
 pub struct EvalStateBuilder {
-  inner:        NonNull<sys::nix_eval_state_builder>,
-  store:        Arc<Store>,
-  context:      Arc<Context>,
-  skip_load:    bool,
-  realise_hook: Option<NonNull<RealiseHook>>,
+  inner:     NonNull<sys::nix_eval_state_builder>,
+  store:     Arc<Store>,
+  context:   Arc<Context>,
+  skip_load: bool,
+  hooks:     Hooks,
 }
 
 impl EvalStateBuilder {
@@ -116,7 +172,7 @@ impl EvalStateBuilder {
       store: Arc::clone(store),
       context: Arc::clone(&store._context),
       skip_load: false,
-      realise_hook: None,
+      hooks: Hooks::default(),
     })
   }
 
@@ -230,13 +286,45 @@ impl EvalStateBuilder {
         ),
       )
     };
-    if let Err(e) = installed {
-      free_realise_hook(Some(hook));
-      return Err(e);
-    }
-    free_realise_hook(self.realise_hook.replace(hook));
+    let unused = match installed {
+      Ok(()) => self.hooks.realise.replace(hook),
+      Err(_) => Some(hook),
+    };
+    drop(Hooks {
+      realise: unused,
+      fetch:   None,
+    });
+    installed.map(|()| self)
+  }
 
-    Ok(self)
+  /// Fetch inputs that are not in the store through `hook` instead of the
+  /// built-in fetchers. `path` inputs are still read directly.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the hook cannot be installed.
+  pub fn set_fetch_hook(mut self, hook: FetchHook) -> Result<Self> {
+    let hook = NonNull::from(Box::leak(Box::new(hook)));
+    let installed = unsafe {
+      check_err(
+        self.context.as_ptr(),
+        sys::nix_eval_state_builder_set_fetch_hook(
+          self.context.as_ptr(),
+          self.inner.as_ptr(),
+          Some(fetch_trampoline),
+          hook.as_ptr().cast(),
+        ),
+      )
+    };
+    let unused = match installed {
+      Ok(()) => self.hooks.fetch.replace(hook),
+      Err(_) => Some(hook),
+    };
+    drop(Hooks {
+      realise: None,
+      fetch:   unused,
+    });
+    installed.map(|()| self)
   }
 
   /// Skip loading Nix configuration from the environment.
@@ -281,7 +369,7 @@ impl EvalStateBuilder {
       inner,
       store: self.store.clone(),
       context: self.context.clone(),
-      realise_hook: self.realise_hook.take(),
+      hooks: std::mem::take(&mut self.hooks),
     })
   }
 }
@@ -292,7 +380,6 @@ impl Drop for EvalStateBuilder {
     unsafe {
       sys::nix_eval_state_builder_free(self.inner.as_ptr());
     }
-    free_realise_hook(self.realise_hook.take());
   }
 }
 
@@ -305,7 +392,8 @@ pub struct EvalState {
   #[expect(dead_code, reason = "keeps the Arc<Store> alive Drop side-effects")]
   store:              Arc<Store>,
   pub(crate) context: Arc<Context>,
-  realise_hook:       Option<NonNull<RealiseHook>>,
+  #[expect(dead_code, reason = "frees the hooks after nix_state_free")]
+  hooks:              Hooks,
 }
 
 impl EvalState {
@@ -871,7 +959,6 @@ impl Drop for EvalState {
     unsafe {
       sys::nix_state_free(self.inner.as_ptr());
     }
-    free_realise_hook(self.realise_hook.take());
   }
 }
 
@@ -881,7 +968,78 @@ unsafe impl Send for EvalState {}
 
 #[cfg(test)]
 mod tests {
+  use std::sync::Mutex;
+
+  use serial_test::serial;
+
   use super::*;
+
+  const UNREACHABLE_TREE: &str = r#"(builtins.fetchTree { type = "tarball"; url = "http://127.0.0.1:1/x"; }).outPath"#;
+
+  fn state_with_fetch_hook(hook: FetchHook) -> EvalState {
+    let ctx = Arc::new(Context::new().unwrap());
+    let store = Arc::new(Store::open(&ctx, None).unwrap());
+    EvalStateBuilder::new(&store)
+      .unwrap()
+      .set_setting("pure-eval", "false")
+      .unwrap()
+      .set_fetch_hook(hook)
+      .unwrap()
+      .build()
+      .unwrap()
+  }
+
+  #[test]
+  #[serial]
+  fn a_fetch_hook_answers_a_missing_tree() {
+    let answer: Arc<Mutex<Option<(String, String)>>> = Arc::default();
+    let requests: Arc<Mutex<Vec<String>>> = Arc::default();
+    let state = state_with_fetch_hook({
+      let answer = Arc::clone(&answer);
+      let requests = Arc::clone(&requests);
+      Box::new(move |request| {
+        requests.lock().unwrap().push(request.to_owned());
+        let (path, nar_hash) = answer.lock().unwrap().clone().unwrap();
+        Ok(format!(
+          r#"{{"storePath":"{path}","attrs":{{"type":"tarball","url":"http://127.0.0.1:1/x","narHash":"{nar_hash}"}}}}"#
+        ))
+      })
+    });
+    let local = state
+      .eval_from_string(
+        r#"let tree = builtins.fetchTree { type = "path"; path = builtins.unsafeDiscardStringContext (builtins.toFile "x" "hello"); }; in [ tree.outPath tree.narHash ]"#,
+        "<eval>",
+      )
+      .unwrap();
+    let path = local.list_get(0).unwrap().as_string().unwrap();
+    let nar_hash = local.list_get(1).unwrap().as_string().unwrap();
+    *answer.lock().unwrap() = Some((path.clone(), nar_hash));
+
+    let out_path = state
+      .eval_from_string(UNREACHABLE_TREE, "<eval>")
+      .unwrap()
+      .as_string()
+      .unwrap();
+
+    assert_eq!(out_path, path);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains(r#""builtin":"fetchTree""#));
+    assert!(requests[0].contains(r#""url":"http://127.0.0.1:1/x""#));
+  }
+
+  #[test]
+  #[serial]
+  fn a_failing_fetch_hook_sets_its_message() {
+    let state =
+      state_with_fetch_hook(Box::new(|_| Err("no route to x".to_owned())));
+
+    let err = state
+      .eval_from_string(UNREACHABLE_TREE, "<eval>")
+      .unwrap_err();
+
+    assert!(err.to_string().contains("no route to x"), "{err}");
+  }
 
   #[test]
   fn a_failing_realise_hook_sets_its_message_on_the_context() {
