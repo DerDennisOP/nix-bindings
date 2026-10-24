@@ -16,7 +16,7 @@
 use std::{ffi::CString, ptr::NonNull, sync::Arc};
 
 use crate::{
-  Context, Error, EvalState, Result, check_err, flake::LockedFlake,
+  Context, Error, EvalState, Result, Value, check_err, flake::LockedFlake,
   string_from_callback, sys,
 };
 
@@ -307,6 +307,31 @@ impl AttrCursor {
 
     Ok(out)
   }
+
+  /// The value at the cursor, evaluated live for shapes the cache cannot
+  /// hold, such as a list of attribute sets.
+  pub fn value<'a>(&self, eval_state: &'a EvalState) -> Result<Value<'a>> {
+    // SAFETY: the returned value is GC-reffed and released by Value's Drop
+    let ptr = unsafe {
+      sys::nix_attr_cursor_force_value(
+        self._context.as_ptr(),
+        eval_state.as_ptr(),
+        self.inner.as_ptr(),
+      )
+    };
+
+    if let Some(inner) = NonNull::new(ptr) {
+      return Ok(Value {
+        inner,
+        state: eval_state,
+      });
+    }
+
+    let code =
+      unsafe { sys::nix_err_code(self._context.as_ptr() as *const _) };
+    check_err(unsafe { self._context.as_ptr() }, code)?;
+    Err(Error::NullPointer)
+  }
 }
 
 impl Drop for AttrCursor {
@@ -344,6 +369,7 @@ mod tests {
         system = "x86_64-linux";
         builder = "/bin/sh";
       };
+      licensed.meta.license = [ { spdxId = "MIT"; } { shortName = "unfree"; } ];
     };
   }"#;
 
@@ -410,6 +436,25 @@ mod tests {
 
     assert!(
       system.maybe_get_attr("definitely_absent").expect("absent").is_none()
+    );
+
+    let license = root
+      .maybe_get_attr("licensed")
+      .expect("licensed")
+      .expect("present")
+      .maybe_get_attr("meta")
+      .expect("meta")
+      .expect("present")
+      .maybe_get_attr("license")
+      .expect("license")
+      .expect("present")
+      .value(&state)
+      .expect("value");
+    assert_eq!(license.list_len().expect("list"), 2);
+    let first = license.list_get(0).expect("first");
+    assert_eq!(
+      first.get_attr("spdxId").expect("spdxId").as_string().expect("string"),
+      "MIT"
     );
   }
 }
