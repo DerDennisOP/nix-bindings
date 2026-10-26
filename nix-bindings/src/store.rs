@@ -764,6 +764,38 @@ impl Store {
     result.ok_or(Error::NullPointer)
   }
 
+  /// System features the store checks `requiredSystemFeatures` against,
+  /// including those implied by enabled experimental features.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if the features cannot be retrieved.
+  pub fn system_features(&self) -> Result<Vec<String>> {
+    unsafe extern "C" fn push_feature(
+      start: *const std::os::raw::c_char,
+      n: std::os::raw::c_uint,
+      user_data: *mut std::os::raw::c_void,
+    ) {
+      let out = unsafe { &mut *(user_data as *mut Vec<String>) };
+      let bytes =
+        unsafe { std::slice::from_raw_parts(start.cast::<u8>(), n as usize) };
+      out.push(String::from_utf8_lossy(bytes).into_owned());
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    // SAFETY: context and store are valid; the callback collects into `out`
+    let err = unsafe {
+      sys::nix_store_get_system_features(
+        self._context.as_ptr(),
+        self.inner.as_ptr(),
+        Some(push_feature),
+        &mut out as *mut Vec<String> as *mut std::os::raw::c_void,
+      )
+    };
+    check_err(unsafe { self._context.as_ptr() }, err)?;
+    Ok(out)
+  }
+
   /// Copy the closure of `path` from `self` into `dst_store`.
   ///
   /// This copies the store path and all its transitive dependencies.
@@ -1092,6 +1124,22 @@ mod tests {
   fn test_store_opening() {
     let ctx = Arc::new(Context::new().expect("Failed to create context"));
     let _store = Store::open(&ctx, None).expect("Failed to open store");
+  }
+
+  #[test]
+  #[serial]
+  fn test_store_system_features_follow_the_store_setting() {
+    let ctx = Arc::new(Context::new().expect("Failed to create context"));
+    let store = Store::open_with_params(
+      &ctx,
+      Some("dummy://"),
+      &[("system-features", "kvm big-parallel")],
+    )
+    .expect("Failed to open store");
+    assert_eq!(
+      store.system_features().expect("Failed to get system features"),
+      vec!["big-parallel", "kvm"]
+    );
   }
 
   #[test]
